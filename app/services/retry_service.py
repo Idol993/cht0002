@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -9,6 +9,7 @@ from app.models.message import RetryQueue, MessageRecord, MessageStatus, Message
 from app.channels.manager import channel_manager
 from app.services.rate_limiter import RateLimiter
 from app.services.user_preference import UserPreferenceService
+from app.services.callback_service import callback_service
 from app.metrics import message_metrics
 from app.config import settings
 
@@ -123,6 +124,7 @@ class RetryService:
                     success = True
                     used_channel = ch_name
                     message_metrics.inc_success(ch_name, priority)
+                    channel_manager.record_channel_success(ch_name)
                     if record:
                         record.status = MessageStatus.SUCCESS.value
                         record.channel = ch_name
@@ -133,11 +135,22 @@ class RetryService:
                     break
                 else:
                     message_metrics.inc_failure(ch_name, priority)
+                    channel_manager.record_channel_failure(ch_name, db)
                     channels_tried.append(ch_name)
 
             if success:
                 retry_item.status = "success"
                 db.commit()
+                if record and record.callback_url:
+                    callback_service.schedule_callback(
+                        db,
+                        record.message_id,
+                        record.user_id,
+                        used_channel,
+                        MessageStatus.SUCCESS.value,
+                        None,
+                        record.callback_url,
+                    )
                 return True
             else:
                 retry_item.retry_count += 1
@@ -150,9 +163,18 @@ class RetryService:
                         record.status = MessageStatus.FAILED.value
                         record.error_message = "重试全部失败"
                     db.commit()
+                    if record and record.callback_url:
+                        callback_service.schedule_callback(
+                            db,
+                            record.message_id,
+                            record.user_id,
+                            record.channel,
+                            MessageStatus.FAILED.value,
+                            record.error_message,
+                            record.callback_url,
+                        )
                     return False
                 else:
-                    from datetime import timedelta
                     retry_item.next_retry_time = datetime.utcnow() + timedelta(
                         minutes=5 * retry_item.retry_count
                     )
@@ -164,6 +186,16 @@ class RetryService:
             retry_item.status = "failed"
             retry_item.last_error = str(e)
             db.commit()
+            if record and record.callback_url:
+                callback_service.schedule_callback(
+                    db,
+                    record.message_id,
+                    record.user_id,
+                    record.channel,
+                    MessageStatus.FAILED.value,
+                    str(e),
+                    record.callback_url,
+                )
             return False
 
     def _update_retry_queue_metric(self):

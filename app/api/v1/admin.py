@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app.database import get_db
 from app.schemas.message import (
@@ -8,8 +8,10 @@ from app.schemas.message import (
     UpdateChannelConfigRequest,
     UserPreferenceOut,
     UpdateUserPreferenceRequest,
+    CallbackRecordOut,
+    CallbackListResponse,
 )
-from app.models.message import ChannelConfig
+from app.models.message import ChannelConfig, CallbackRecord
 from app.services.user_preference import UserPreferenceService
 from app.channels.manager import channel_manager
 from app.metrics import message_metrics
@@ -72,6 +74,8 @@ async def update_channel_config(
     - **daily_limit**: 日发送量上限
     - **priority_weight**: 优先级权重
     - **retry_count**: 重试次数
+    - **circuit_breaker_threshold**: 熔断阈值
+    - **circuit_breaker_recovery_minutes**: 熔断恢复时间(分钟)
     """
     if channel not in channel_manager.get_all_channels():
         raise HTTPException(status_code=404, detail=f"通道 {channel} 不存在")
@@ -97,10 +101,44 @@ async def update_channel_config(
         config.priority_weight = request.priority_weight
     if request.retry_count is not None:
         config.retry_count = request.retry_count
+    if request.circuit_breaker_threshold is not None:
+        config.circuit_breaker_threshold = request.circuit_breaker_threshold
+    if request.circuit_breaker_recovery_minutes is not None:
+        config.circuit_breaker_recovery_minutes = request.circuit_breaker_recovery_minutes
 
     db.commit()
     db.refresh(config)
     return ChannelConfigOut.model_validate(config)
+
+
+@router.get("/callbacks", response_model=CallbackListResponse, summary="查询回调记录")
+async def list_callbacks(
+    message_id: Optional[str] = Query(None, description="按消息ID过滤"),
+    callback_status: Optional[str] = Query(None, description="按回调状态过滤"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    db: Session = Depends(get_db),
+):
+    query = db.query(CallbackRecord)
+
+    if message_id:
+        query = query.filter(CallbackRecord.message_id == message_id)
+    if callback_status:
+        query = query.filter(CallbackRecord.callback_status == callback_status)
+
+    total = query.count()
+
+    items = (
+        query.order_by(CallbackRecord.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return CallbackListResponse(
+        total=total,
+        items=[CallbackRecordOut.model_validate(item) for item in items],
+    )
 
 
 @router.get("/users/{user_id}/preference", response_model=UserPreferenceOut, summary="获取用户偏好")

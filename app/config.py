@@ -21,6 +21,10 @@ class Settings(BaseSettings):
 
     normal_retry_delay_minutes: int = 5
     high_priority_retry_immediate: bool = True
+    default_circuit_breaker_threshold: int = 5
+    default_circuit_breaker_recovery_minutes: int = 10
+    max_callback_retries: int = 3
+    callback_retry_delay_minutes: int = 5
 
     prometheus_port: int = 9090
     api_port: int = 8000

@@ -15,6 +15,7 @@ from app.channels.manager import channel_manager
 from app.channels.base import ChannelResult
 from app.services.rate_limiter import RateLimiter
 from app.services.user_preference import UserPreferenceService
+from app.services.callback_service import callback_service
 from app.config import settings
 from app.metrics import message_metrics
 
@@ -34,7 +35,24 @@ class MessageRouter:
         template_id: Optional[str] = None,
         template_data: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[str, str, Optional[str], Optional[int]]:
+        biz_msg_id: Optional[str] = None,
+        callback_url: Optional[str] = None,
+    ) -> Tuple[str, str, Optional[str], Optional[int], int]:
+        if biz_msg_id:
+            existing = (
+                self.db.query(MessageRecord)
+                .filter(MessageRecord.biz_msg_id == biz_msg_id)
+                .first()
+            )
+            if existing:
+                return (
+                    existing.message_id,
+                    existing.status,
+                    existing.channel,
+                    None,
+                    200,
+                )
+
         message_id = self._generate_message_id()
         is_marketing = priority == MessagePriority.MARKETING.value
         is_high_priority = priority == MessagePriority.HIGH.value
@@ -49,16 +67,45 @@ class MessageRouter:
             status=MessageStatus.PENDING.value,
             extra_data=metadata or {},
             send_time=datetime.utcnow(),
+            biz_msg_id=biz_msg_id,
+            callback_url=callback_url,
+            first_send_time=datetime.utcnow(),
         )
         self.db.add(record)
         self.db.commit()
 
         ranked_channels = self._get_ranked_channels(user_id)
         if not ranked_channels:
-            record.status = MessageStatus.FAILED.value
-            record.error_message = "无可用通道"
-            self.db.commit()
-            return message_id, MessageStatus.FAILED.value, None, None
+            circuit_broken = (
+                self.db.query(ChannelConfig)
+                .filter(
+                    ChannelConfig.enabled == True,
+                    ChannelConfig.circuit_breaker_active == True,
+                )
+                .first()
+            )
+            if circuit_broken:
+                record.status = MessageStatus.FAILED.value
+                record.error_code = "CHANNEL_CIRCUIT_BREAKER"
+                record.error_message = "所有通道因熔断不可用"
+                self.db.commit()
+                if callback_url:
+                    callback_service.schedule_callback(
+                        self.db, message_id, user_id, None,
+                        MessageStatus.FAILED.value, record.error_message, callback_url,
+                    )
+                return message_id, MessageStatus.FAILED.value, None, None, 503
+            else:
+                record.status = MessageStatus.FAILED.value
+                record.error_code = "NO_AVAILABLE_CHANNEL"
+                record.error_message = "无可用通道"
+                self.db.commit()
+                if callback_url:
+                    callback_service.schedule_callback(
+                        self.db, message_id, user_id, None,
+                        MessageStatus.FAILED.value, record.error_message, callback_url,
+                    )
+                return message_id, MessageStatus.FAILED.value, None, None, 200
 
         selected_channel = None
         for ch_name in ranked_channels:
@@ -81,13 +128,25 @@ class MessageRouter:
                 )
                 record.status = MessageStatus.QUEUED.value
                 record.channel = None
+                record.error_code = "RATE_LIMITED"
                 self.db.commit()
-                return message_id, MessageStatus.RATE_LIMITED.value, None, 60
+                if callback_url:
+                    callback_service.schedule_callback(
+                        self.db, message_id, user_id, None,
+                        MessageStatus.QUEUED.value, "高优先级消息限频排队", callback_url,
+                    )
+                return message_id, MessageStatus.RATE_LIMITED.value, None, 60, 202
             else:
                 record.status = MessageStatus.RATE_LIMITED.value
                 record.error_message = "所有通道均已达日限频"
+                record.error_code = "RATE_LIMITED"
                 self.db.commit()
-                return message_id, MessageStatus.RATE_LIMITED.value, None, None
+                if callback_url:
+                    callback_service.schedule_callback(
+                        self.db, message_id, user_id, None,
+                        MessageStatus.RATE_LIMITED.value, record.error_message, callback_url,
+                    )
+                return message_id, MessageStatus.RATE_LIMITED.value, None, None, 429
 
         record.channel = selected_channel
         record.status = MessageStatus.SENDING.value
@@ -112,12 +171,20 @@ class MessageRouter:
         if result.success:
             record.status = MessageStatus.SUCCESS.value
             message_metrics.inc_success(selected_channel)
+            channel_manager.record_channel_success(selected_channel)
             self.db.commit()
-            return message_id, MessageStatus.SUCCESS.value, selected_channel, None
+            if callback_url:
+                callback_service.schedule_callback(
+                    self.db, message_id, user_id, selected_channel,
+                    MessageStatus.SUCCESS.value, None, callback_url,
+                )
+            return message_id, MessageStatus.SUCCESS.value, selected_channel, None, 200
         else:
             record.status = MessageStatus.FAILED.value
             record.error_message = result.message
+            record.error_code = result.error_code or "CHANNEL_ERROR"
             message_metrics.inc_failure(selected_channel)
+            channel_manager.record_channel_failure(selected_channel, self.db)
 
             channels_tried.append(selected_channel)
 
@@ -132,6 +199,7 @@ class MessageRouter:
                     channels_tried=channels_tried,
                     is_marketing=is_marketing,
                     record=record,
+                    callback_url=callback_url,
                 )
                 if fallback_result and fallback_result.success:
                     return (
@@ -139,6 +207,7 @@ class MessageRouter:
                         MessageStatus.SUCCESS.value,
                         fallback_channel,
                         None,
+                        200,
                     )
                 else:
                     self._queue_for_retry(
@@ -154,11 +223,17 @@ class MessageRouter:
                     )
                     record.status = MessageStatus.RETRYING.value
                     self.db.commit()
+                    if callback_url:
+                        callback_service.schedule_callback(
+                            self.db, message_id, user_id, selected_channel,
+                            MessageStatus.RETRYING.value, record.error_message, callback_url,
+                        )
                     return (
                         message_id,
                         MessageStatus.RETRYING.value,
                         selected_channel,
                         None,
+                        202,
                     )
             elif priority == MessagePriority.NORMAL.value:
                 self._queue_for_retry(
@@ -174,19 +249,31 @@ class MessageRouter:
                 )
                 record.status = MessageStatus.RETRYING.value
                 self.db.commit()
+                if callback_url:
+                    callback_service.schedule_callback(
+                        self.db, message_id, user_id, selected_channel,
+                        MessageStatus.RETRYING.value, record.error_message, callback_url,
+                    )
                 return (
                     message_id,
                     MessageStatus.RETRYING.value,
                     selected_channel,
                     settings.normal_retry_delay_minutes * 60,
+                    202,
                 )
             else:
                 self.db.commit()
+                if callback_url:
+                    callback_service.schedule_callback(
+                        self.db, message_id, user_id, selected_channel,
+                        MessageStatus.FAILED.value, record.error_message, callback_url,
+                    )
                 return (
                     message_id,
                     MessageStatus.FAILED.value,
                     selected_channel,
                     None,
+                    200,
                 )
 
     def _try_fallback_channels(
@@ -200,6 +287,7 @@ class MessageRouter:
         title: Optional[str] = None,
         template_id: Optional[str] = None,
         template_data: Optional[Dict[str, Any]] = None,
+        callback_url: Optional[str] = None,
     ) -> Tuple[Optional[ChannelResult], Optional[str]]:
         ranked_channels = self._get_ranked_channels(user_id)
 
@@ -232,12 +320,20 @@ class MessageRouter:
                 record.delivered_time = datetime.utcnow()
                 record.error_message = None
                 message_metrics.inc_success(ch_name)
+                channel_manager.record_channel_success(ch_name)
                 self.db.commit()
+                if callback_url:
+                    callback_service.schedule_callback(
+                        self.db, record.message_id, user_id, ch_name,
+                        MessageStatus.SUCCESS.value, None, callback_url,
+                    )
                 return result, ch_name
             else:
                 message_metrics.inc_failure(ch_name)
+                channel_manager.record_channel_failure(ch_name, self.db)
                 channels_tried.append(ch_name)
                 record.error_message = result.message
+                record.error_code = result.error_code or "CHANNEL_ERROR"
 
         record.status = MessageStatus.FAILED.value
         self.db.commit()

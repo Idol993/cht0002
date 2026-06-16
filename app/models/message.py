@@ -44,6 +44,10 @@ class MessageRecord(Base):
     max_retries = Column(Integer, default=3)
     error_message = Column(Text, nullable=True)
     extra_data = Column(JSON, default={})
+    biz_msg_id = Column(String(128), unique=True, index=True, nullable=True)
+    callback_url = Column(String(512), nullable=True)
+    first_send_time = Column(DateTime, nullable=True)
+    error_code = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -71,6 +75,25 @@ class UserPreference(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class CallbackRecord(Base):
+    __tablename__ = "callback_records"
+
+    id = Column(Integer, primary_key=True)
+    message_id = Column(String(64), index=True)
+    user_id = Column(String(64), index=True)
+    channel = Column(String(32))
+    status = Column(String(32))
+    error_message = Column(Text, nullable=True)
+    callback_url = Column(String(512))
+    callback_status = Column(String(32), default="pending")
+    callback_retry_count = Column(Integer, default=0)
+    max_callback_retries = Column(Integer, default=3)
+    next_callback_time = Column(DateTime, nullable=True)
+    callback_response = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ChannelConfig(Base):
     __tablename__ = "channel_configs"
 
@@ -81,6 +104,11 @@ class ChannelConfig(Base):
     priority_weight = Column(Integer, default=10)
     retry_count = Column(Integer, default=3)
     config_data = Column(JSON, default={})
+    circuit_breaker_threshold = Column(Integer, default=5)
+    circuit_breaker_recovery_minutes = Column(Integer, default=10)
+    circuit_breaker_active = Column(Boolean, default=False)
+    circuit_breaker_until = Column(DateTime, nullable=True)
+    consecutive_failures = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -99,6 +127,7 @@ class DailyLimitCounter(Base):
 
     __table_args__ = (
         Index("idx_user_channel_date", "user_id", "channel", "date", unique=True),
+        Index("idx_user_date", "user_id", "date"),
     )
 
 

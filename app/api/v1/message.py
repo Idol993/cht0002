@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
@@ -37,7 +38,7 @@ async def send_message(
     """
     router_svc = MessageRouter(db)
 
-    message_id, status, channel, retry_after = router_svc.send_message(
+    message_id, status, channel, retry_after, http_status_code = router_svc.send_message(
         user_id=request.user_id,
         content=request.content,
         priority=request.priority.value,
@@ -45,6 +46,8 @@ async def send_message(
         template_id=request.template_id,
         template_data=request.template_data,
         metadata=request.metadata,
+        biz_msg_id=request.biz_msg_id,
+        callback_url=request.callback_url,
     )
 
     status_msg_map = {
@@ -56,12 +59,18 @@ async def send_message(
         MessageStatus.PENDING.value: "消息处理中",
     }
 
-    return SendMessageResponse(
+    resp = SendMessageResponse(
         message_id=message_id,
         status=status,
         channel=channel,
         retry_after_seconds=retry_after,
         message=status_msg_map.get(status, "未知状态"),
+        biz_msg_id=request.biz_msg_id,
+    )
+
+    return JSONResponse(
+        content=resp.model_dump(),
+        status_code=http_status_code,
     )
 
 

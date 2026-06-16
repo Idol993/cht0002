@@ -10,6 +10,7 @@ from app.api.v1.stats import router as stats_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.health import router as health_router
 from app.services.retry_service import retry_service
+from app.services.callback_service import callback_service
 from app.channels.manager import channel_manager
 from app.metrics import message_metrics
 
@@ -19,7 +20,9 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     _init_channel_configs()
     retry_service.start()
+    callback_service.start()
     yield
+    callback_service.stop()
     retry_service.stop()
 
 

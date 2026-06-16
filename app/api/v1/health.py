@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.schemas.message import HealthCheckResponse
+from app.schemas.message import HealthCheckResponse, ChannelHealthDetail
 from app.channels.manager import channel_manager
 from app.config import settings
 from app.models.message import ChannelConfig
@@ -29,11 +29,24 @@ async def health_check(db: Session = Depends(get_db)):
 
     for ch_name in channel_manager.get_all_channels().keys():
         cfg = config_map.get(ch_name)
-        channel_statuses[ch_name] = cfg.enabled if cfg else True
+        if cfg:
+            channel_statuses[ch_name] = ChannelHealthDetail(
+                enabled=cfg.enabled,
+                circuit_breaker_active=cfg.circuit_breaker_active or False,
+                circuit_breaker_until=cfg.circuit_breaker_until,
+                consecutive_failures=cfg.consecutive_failures or 0,
+            )
+        else:
+            channel_statuses[ch_name] = ChannelHealthDetail(
+                enabled=True,
+                circuit_breaker_active=False,
+                circuit_breaker_until=None,
+                consecutive_failures=0,
+            )
 
     return HealthCheckResponse(
         status="healthy" if db_healthy else "degraded",
         version=settings.app_version,
         timestamp=datetime.utcnow(),
-        channels=channel_statuses,
+        channels={k: v.model_dump() for k, v in channel_statuses.items()},
     )

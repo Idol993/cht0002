@@ -35,6 +35,8 @@ class SendMessageRequest(BaseModel):
     template_id: Optional[str] = Field(None, description="模板ID（微信模板消息使用）")
     template_data: Optional[Dict[str, Any]] = Field(None, description="模板数据")
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="附加元数据")
+    biz_msg_id: Optional[str] = None
+    callback_url: Optional[str] = None
 
 
 class SendMessageResponse(BaseModel):
@@ -43,6 +45,7 @@ class SendMessageResponse(BaseModel):
     channel: Optional[str] = None
     retry_after_seconds: Optional[int] = None
     message: str
+    biz_msg_id: Optional[str] = None
 
 
 class MessageRecordOut(BaseModel):
@@ -58,6 +61,10 @@ class MessageRecordOut(BaseModel):
     duration_ms: Optional[float]
     retry_count: int
     error_message: Optional[str]
+    biz_msg_id: Optional[str] = None
+    callback_url: Optional[str] = None
+    error_code: Optional[str] = None
+    first_send_time: Optional[datetime] = None
     created_at: datetime
 
     class Config:
@@ -101,6 +108,11 @@ class ChannelConfigOut(BaseModel):
     daily_limit: int
     priority_weight: int
     retry_count: int
+    circuit_breaker_threshold: int
+    circuit_breaker_recovery_minutes: int
+    circuit_breaker_active: bool
+    circuit_breaker_until: Optional[datetime] = None
+    consecutive_failures: int
 
     class Config:
         from_attributes = True
@@ -111,6 +123,8 @@ class UpdateChannelConfigRequest(BaseModel):
     daily_limit: Optional[int] = Field(None, ge=1)
     priority_weight: Optional[int] = Field(None, ge=1, le=100)
     retry_count: Optional[int] = Field(None, ge=0, le=10)
+    circuit_breaker_threshold: Optional[int] = Field(None, ge=1)
+    circuit_breaker_recovery_minutes: Optional[int] = Field(None, ge=1)
 
 
 class UserPreferenceOut(BaseModel):
@@ -140,4 +154,78 @@ class HealthCheckResponse(BaseModel):
     status: str
     version: str
     timestamp: datetime
-    channels: Dict[str, bool]
+    channels: Dict[str, Any]
+
+
+class CallbackRecordOut(BaseModel):
+    id: int
+    message_id: str
+    user_id: str
+    channel: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    callback_url: str
+    callback_status: str
+    callback_retry_count: int
+    callback_response: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CallbackListResponse(BaseModel):
+    total: int
+    items: List[CallbackRecordOut]
+
+
+class PriorityStats(BaseModel):
+    priority: str
+    total_count: int
+    success_count: int
+    failed_count: int
+    delivery_rate: float
+    avg_duration_ms: float
+
+
+class PriorityStatsResponse(BaseModel):
+    items: List[PriorityStats]
+
+
+class FailureReasonStats(BaseModel):
+    error_code: str
+    count: int
+
+
+class FailureReasonStatsResponse(BaseModel):
+    items: List[FailureReasonStats]
+
+
+class RetryStats(BaseModel):
+    retry_count: int
+    total: int
+    success: int
+    success_rate: float
+
+
+class RetryStatsResponse(BaseModel):
+    items: List[RetryStats]
+
+
+class HighPriorityLatencyStats(BaseModel):
+    avg_end_to_end_ms: float
+    p95_end_to_end_ms: float
+    count: int
+
+
+class NormalRetrySuccessStats(BaseModel):
+    total_entered_retry: int
+    final_success: int
+    final_success_rate: float
+
+
+class ChannelHealthDetail(BaseModel):
+    enabled: bool
+    circuit_breaker_active: bool
+    circuit_breaker_until: Optional[datetime] = None
+    consecutive_failures: int
