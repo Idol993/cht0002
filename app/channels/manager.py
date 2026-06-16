@@ -96,14 +96,24 @@ class ChannelManager:
 
     def is_circuit_breaker_active(self, channel: str, db: Session) -> bool:
         state = self._circuit_breaker_state.get(channel)
-        if not state or not state.get("active"):
+        if not state:
+            state = {"consecutive_failures": 0, "active": False, "until": None}
+            self._circuit_breaker_state[channel] = state
+
+        cfg = db.query(DBChannelConfig).filter(DBChannelConfig.channel == channel).first()
+
+        if cfg and cfg.circuit_breaker_active and not state.get("active"):
+            state["active"] = True
+            state["until"] = cfg.circuit_breaker_until
+            state["consecutive_failures"] = cfg.consecutive_failures or 0
+
+        if not state.get("active"):
             return False
         if state.get("until") and datetime.utcnow() < state["until"]:
             return True
         state["active"] = False
         state["until"] = None
         state["consecutive_failures"] = 0
-        cfg = db.query(DBChannelConfig).filter(DBChannelConfig.channel == channel).first()
         if cfg:
             cfg.circuit_breaker_active = False
             cfg.circuit_breaker_until = None

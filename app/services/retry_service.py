@@ -162,6 +162,7 @@ class RetryService:
                     if record:
                         record.status = MessageStatus.FAILED.value
                         record.error_message = "重试全部失败"
+                        record.retry_count = (record.retry_count or 0) + 1
                     db.commit()
                     if record and record.callback_url:
                         callback_service.schedule_callback(

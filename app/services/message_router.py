@@ -45,12 +45,21 @@ class MessageRouter:
                 .first()
             )
             if existing:
+                status = existing.status
+                if status in (MessageStatus.QUEUED.value, MessageStatus.RETRYING.value):
+                    http_code = 202
+                elif status == MessageStatus.RATE_LIMITED.value:
+                    http_code = 429
+                elif status == MessageStatus.FAILED.value:
+                    http_code = 200
+                else:
+                    http_code = 200
                 return (
                     existing.message_id,
                     existing.status,
                     existing.channel,
                     None,
-                    200,
+                    http_code,
                 )
 
         message_id = self._generate_message_id()
@@ -135,7 +144,7 @@ class MessageRouter:
                         self.db, message_id, user_id, None,
                         MessageStatus.QUEUED.value, "高优先级消息限频排队", callback_url,
                     )
-                return message_id, MessageStatus.RATE_LIMITED.value, None, 60, 202
+                return message_id, MessageStatus.QUEUED.value, None, 60, 202
             else:
                 record.status = MessageStatus.RATE_LIMITED.value
                 record.error_message = "所有通道均已达日限频"
@@ -408,6 +417,11 @@ class MessageRouter:
         }
         self.db.add(retry_item)
         self.db.commit()
+
+        msg_record = self.db.query(MessageRecord).filter(MessageRecord.message_id == message_id).first()
+        if msg_record:
+            msg_record.retry_count = max(msg_record.retry_count or 0, 1)
+            self.db.commit()
 
     def process_retry(self, retry_item: RetryQueue) -> bool:
         from app.services.retry_service import retry_service

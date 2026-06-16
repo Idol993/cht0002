@@ -29,6 +29,8 @@ async def list_channel_configs(db: Session = Depends(get_db)):
     config_map = {c.channel: c for c in configs}
 
     all_channels = channel_manager.get_all_channels()
+    for ch_name in all_channels.keys():
+        channel_manager.is_circuit_breaker_active(ch_name, db)
     result = []
 
     default_limits = {

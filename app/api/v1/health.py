@@ -28,6 +28,7 @@ async def health_check(db: Session = Depends(get_db)):
     config_map = {c.channel: c for c in configs}
 
     for ch_name in channel_manager.get_all_channels().keys():
+        channel_manager.is_circuit_breaker_active(ch_name, db)
         cfg = config_map.get(ch_name)
         if cfg:
             channel_statuses[ch_name] = ChannelHealthDetail(

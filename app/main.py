@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from prometheus_client import make_asgi_app
 
 from app.config import settings
-from app.database import Base, engine
+from app.database import Base, engine, migrate_database
 from app.api.v1.message import router as message_router
 from app.api.v1.stats import router as stats_router
 from app.api.v1.admin import router as admin_router
@@ -18,6 +18,7 @@ from app.metrics import message_metrics
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    migrate_database(engine)
     _init_channel_configs()
     retry_service.start()
     callback_service.start()
